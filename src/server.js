@@ -9,24 +9,29 @@ require('./config/firebase'); // Initialize Firebase
 
 const app = express();
 
-// CORS Configuration
-const corsOptions = {
-  origin: [
-    'https://travease-final.vercel.app',
-    'http://localhost:8100',
-    'http://localhost:4200'
-  ],
+// Add CORS headers directly via middleware
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    return res.status(200).send();
+  }
+
+  next();
+});
+
+// Also keep regular CORS middleware for compatibility
+app.use(cors({
+  origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
   optionsSuccessStatus: 200
-};
-
-// Middleware
-app.use(cors(corsOptions));
-
-// Add OPTIONS response for preflight requests
-app.options('*', cors(corsOptions));
+}));
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -49,4 +54,5 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
+  console.log('CORS configured to allow all origins');
 });
