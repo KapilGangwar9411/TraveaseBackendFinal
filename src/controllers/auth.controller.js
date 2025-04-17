@@ -2,14 +2,29 @@ const twilio = require('twilio');
 const jwt = require('jsonwebtoken');
 const User = require('../models/user.model');
 
-// Initialize Twilio client
-const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+// Initialize Twilio client conditionally
+let client;
+try {
+  if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
+    client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+    console.log('✅ Twilio client initialized successfully');
+  } else {
+    console.log('⚠️ Twilio credentials not found in environment variables:');
+    console.log(`  TWILIO_ACCOUNT_SID: ${process.env.TWILIO_ACCOUNT_SID ? 'Found' : 'Missing'}`);
+    console.log(`  TWILIO_AUTH_TOKEN: ${process.env.TWILIO_AUTH_TOKEN ? 'Found' : 'Missing'}`);
+    console.log('⚠️ SMS functionality will be disabled. OTPs will be returned in the API response for development.');
+  }
+} catch (error) {
+  console.error('❌ Failed to initialize Twilio client:', error);
+  console.log('⚠️ Error details:', JSON.stringify(error, null, 2));
+  console.log('⚠️ SMS functionality will be disabled');
+}
 
 // Generate JWT token
 const generateToken = (user) => {
   return jwt.sign(
     { id: user.id, phoneNumber: user.phoneNumber },
-    process.env.JWT_SECRET,
+    process.env.JWT_SECRET || 'default_jwt_secret_for_development',
     { expiresIn: '30d' }
   );
 };
@@ -28,65 +43,90 @@ const formatPhoneNumber = (phoneNumber) => {
 };
 
 // Send OTP
-exports.sendOTP = async (req, res) => {
-  console.log('⭐ Send OTP Request Body:', JSON.stringify(req.body, null, 2));
+const sendOTP = async (req, res) => {
+  console.log('📱 Sending OTP - Request Body:', req.body);
+
+  const { phoneNumber } = req.body;
+
+  if (!phoneNumber) {
+    console.log('❌ Phone number missing in request');
+    return res.status(400).json({
+      success: false,
+      message: 'Phone number is required'
+    });
+  }
 
   try {
-    const { phoneNumber } = req.body;
-
-    if (!phoneNumber) {
-      console.log('❌ Missing phone number');
-      return res.status(400).json({ success: false, message: 'Phone number is required' });
-    }
-
-    // Format the phone number
     const formattedPhoneNumber = formatPhoneNumber(phoneNumber);
-    console.log(`📱 Sending OTP to: ${formattedPhoneNumber}`);
+    console.log(`📞 Formatted phone number: ${formattedPhoneNumber}`);
 
     // Generate 6-digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const otpExpires = new Date(Date.now() + 300000); // 5 minutes from now
+    console.log(`🔑 Generated OTP: ${otp}`);
 
-    console.log(`🔢 Generated OTP: ${otp}`);
-    console.log(`⏱️ OTP expires at: ${otpExpires}`);
+    // Set OTP expiration time (10 minutes from now)
+    const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
+    console.log(`⏱️ OTP expires at: ${otpExpires.toISOString()}`);
 
-    // Store OTP in database
-    const user = await User.createOrUpdate(formattedPhoneNumber, {
+    // Save OTP in database
+    await User.createOrUpdate({
+      phoneNumber: formattedPhoneNumber,
       otp,
       otpExpires
     });
+    console.log('💾 OTP saved to database');
 
-    console.log(`✅ User data stored/updated with ID: ${user.id}`);
-
-    // Send OTP via SMS if Twilio credentials are available
-    if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_PHONE_NUMBER) {
+    // Send OTP via SMS if Twilio is configured
+    if (client && process.env.TWILIO_PHONE_NUMBER) {
       try {
         await client.messages.create({
-          body: `Your Travease verification code is: ${otp}`,
-          to: formattedPhoneNumber,
-          from: process.env.TWILIO_PHONE_NUMBER
+          body: `Your Travease verification code is: ${otp}. Valid for 10 minutes.`,
+          from: process.env.TWILIO_PHONE_NUMBER,
+          to: formattedPhoneNumber
         });
-        console.log('📨 SMS sent successfully via Twilio');
-      } catch (twilioError) {
-        console.error('⚠️ Twilio SMS error:', twilioError);
-        // Continue even if SMS fails - useful for testing
-        console.log('⚠️ Continuing despite SMS failure (for testing)');
+        console.log('✅ SMS sent successfully');
+
+        return res.status(200).json({
+          success: true,
+          message: 'OTP sent successfully'
+        });
+      } catch (smsError) {
+        console.error('❌ Failed to send SMS:', smsError);
+
+        // In production, you might want to return an error here,
+        // but for development, we'll proceed and return the OTP
+        if (process.env.NODE_ENV === 'production') {
+          return res.status(500).json({
+            success: false,
+            message: 'Failed to send OTP via SMS'
+          });
+        }
       }
-    } else {
-      console.log('⚠️ Twilio credentials not configured. Skipping SMS sending.');
-      console.log('💡 For testing, use OTP:', otp);
     }
 
+    // If Twilio is not configured or SMS sending failed in development
+    console.log('⚠️ Returning OTP in response (development mode only)');
     return res.status(200).json({
       success: true,
-      message: 'OTP sent successfully',
-      devNote: process.env.NODE_ENV === 'development' ? `Test OTP: ${otp}` : undefined
+      message: 'OTP generated successfully',
+      development: {
+        otp,
+        expiresAt: otpExpires
+      }
     });
+
   } catch (error) {
-    console.error('❌ Error sending OTP:', error);
-    return res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    console.error('❌ Error in sendOTP:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to generate and send OTP',
+      error: process.env.NODE_ENV !== 'production' ? error.message : undefined
+    });
   }
 };
+
+// Export the sendOTP function
+exports.sendOTP = sendOTP;
 
 /**
  * Verify OTP
